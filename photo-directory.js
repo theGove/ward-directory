@@ -1,12 +1,67 @@
 (async function () {
   "use strict";
 
-  const MESSAGE_TEMPLATE_KEY = "wpd-message-template";
-  let messageTemplate = "";
+  // Legacy single-template key from before the Messages tab supported multiple,
+  // named messages - read once below to migrate anyone's saved text forward.
+  const LEGACY_MESSAGE_TEMPLATE_KEY = "wpd-message-template";
+  const MESSAGES_KEY = "wpd-messages";
+  const ACTIVE_MESSAGE_KEY = "wpd-active-message-id";
+
+  function makeMessageId() {
+    return "m" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  }
+
+  // messages: [{ id, messageName, messageText, formLink }, ...] - always at least one entry.
+  // formLink is an optional Google Form prefilled link - when set, Copy Message
+  // also submits a response to that form (see submitToGoogleForm).
+  let messages = [];
+  let activeMessageId = "";
   try {
-    messageTemplate = localStorage.getItem(MESSAGE_TEMPLATE_KEY) || "";
+    const stored = JSON.parse(localStorage.getItem(MESSAGES_KEY) || "null");
+    if (Array.isArray(stored) && stored.length) {
+      messages = stored.map((m) => ({
+        id: (m && m.id) || makeMessageId(),
+        messageName: (m && m.messageName) || "Message",
+        messageText: (m && m.messageText) || "",
+        formLink: (m && m.formLink) || ""
+      }));
+    }
   } catch (e) {
-    messageTemplate = "";
+    messages = [];
+  }
+  if (!messages.length) {
+    let legacyText = "";
+    try {
+      legacyText = localStorage.getItem(LEGACY_MESSAGE_TEMPLATE_KEY) || "";
+    } catch (e) {
+      legacyText = "";
+    }
+    messages = [{ id: makeMessageId(), messageName: "Message 1", messageText: legacyText, formLink: "" }];
+  }
+  try {
+    activeMessageId = localStorage.getItem(ACTIVE_MESSAGE_KEY) || "";
+  } catch (e) {
+    activeMessageId = "";
+  }
+  if (!messages.some((m) => m.id === activeMessageId)) {
+    activeMessageId = messages[0].id;
+  }
+
+  function getActiveMessage() {
+    return messages.find((m) => m.id === activeMessageId) || messages[0];
+  }
+
+  function messagesHaveContent() {
+    return messages.some((m) => m.messageText.trim().length > 0);
+  }
+
+  function saveMessages() {
+    try {
+      localStorage.setItem(MESSAGES_KEY, JSON.stringify(messages));
+      localStorage.setItem(ACTIVE_MESSAGE_KEY, activeMessageId);
+    } catch (e) {
+      // localStorage may be unavailable - messages just won't persist
+    }
   }
 
   // Staged data from the Messages tab's Import Values controls (paste/upload/example) -
@@ -96,8 +151,8 @@
   };
 
   function cardActionsHTML(uuid) {
-    const messageButton = messageTemplate.trim()
-      ? `<button type="button" class="card-icon-btn" data-card-action="copy-message" title="Copy Message" aria-label="Copy Message">${CARD_ICONS.message}</button>`
+    const messageButton = messagesHaveContent()
+      ? `<button type="button" class="card-icon-btn" data-card-action="copy-message" title="Copy Message (Ctrl+click to choose which one)" aria-label="Copy Message">${CARD_ICONS.message}</button>`
       : "";
     return `
     <div class="card-toolbar">
@@ -183,7 +238,7 @@
   }
 
   function refreshMessageButtons() {
-    const shouldShow = messageTemplate.trim().length > 0;
+    const shouldShow = messagesHaveContent();
     for (const toolbar of document.querySelectorAll(".card-toolbar")) {
       const existing = toolbar.querySelector('[data-card-action="copy-message"]');
       if (shouldShow && !existing) {
@@ -191,7 +246,7 @@
         btn.type = "button";
         btn.className = "card-icon-btn";
         btn.dataset.cardAction = "copy-message";
-        btn.title = "Copy Message";
+        btn.title = "Copy Message (Ctrl+click to choose which one)";
         btn.setAttribute("aria-label", "Copy Message");
         btn.innerHTML = CARD_ICONS.message;
         const copyBtn = toolbar.querySelector('[data-card-action="copy"]');
@@ -538,7 +593,7 @@
     #burger{
       height:20px;
       padding: 5px;
-      position: absolute;
+      position: fixed;
       left: 0;
       top: 0;
     }
@@ -644,7 +699,7 @@
       if (actionBtn.dataset.cardAction === "copy") {
         copyCardToClipboard(card, actionBtn);
       } else if (actionBtn.dataset.cardAction === "copy-message") {
-        copyMessageForCard(card, actionBtn);
+        copyMessageForCard(card, actionBtn, evt);
       } else if (actionBtn.dataset.cardAction === "paste-before") {
         pasteCardBefore(card);
       } else if (actionBtn.dataset.cardAction === "delete") {
@@ -770,19 +825,184 @@
     );
   }
 
-  function copyMessageForCard(card, button) {
-    if (!messageTemplate.trim()) return;
+  // Reduces a form question's placeholder answer (e.g. "Individual Phone",
+  // possibly URL-encoded) and a card field's label to the same normalized form
+  // so they can be matched regardless of casing/spacing differences.
+  function normalizeFieldKey(text) {
+    let value = String(text || "");
+    try {
+      value = decodeURIComponent(value.replace(/\+/g, " "));
+    } catch (e) {
+      // already decoded, or not validly encoded - use as-is
+    }
+    return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  }
+
+  // Reads a Google Forms prefilled link (from "Get pre-filled link") and returns
+  // the formResponse submission URL plus each entry's id and placeholder answer
+  // text (the thing to match against card fields), or null if it's not one.
+  function parseGoogleFormLink(link) {
+    let url;
+    try {
+      url = new URL(link.trim());
+    } catch (e) {
+      return null;
+    }
+    if (!/(^|\.)docs\.google\.com$/.test(url.hostname)) return null;
+
+    const entries = [];
+    for (const [key, value] of url.searchParams) {
+      const m = key.match(/^entry\.(\d+)$/);
+      if (m) entries.push({ entryId: m[1], placeholder: value });
+    }
+    if (!entries.length) return null;
+
+    let pathname = url.pathname;
+    if (pathname.endsWith("/viewform")) {
+      pathname = pathname.slice(0, -"/viewform".length) + "/formResponse";
+    } else if (!pathname.endsWith("/formResponse")) {
+      pathname = pathname.replace(/\/[^/]*$/, "/formResponse");
+    }
+
+    return { actionUrl: url.origin + pathname, entries };
+  }
+
+  // Submits a hidden POST to a Google Form (via a hidden iframe, so the page
+  // never navigates) using a prefilled link only to learn which entry id goes
+  // with which card field - the actual values come from this member's card.
+  function submitToGoogleForm(formLink, member, card, messageText) {
+    const parsed = parseGoogleFormLink(formLink);
+    if (!parsed) return;
+
+    const params = getMessageParams(member, card);
+    const normalizedParams = {};
+    for (const key of Object.keys(params)) {
+      normalizedParams[normalizeFieldKey(key)] = params[key];
+    }
+
+    const FRAME_NAME = "wpd-form-submit-frame";
+    let iframe = document.getElementById(FRAME_NAME);
+    if (!iframe) {
+      iframe = document.createElement("iframe");
+      iframe.id = FRAME_NAME;
+      iframe.name = FRAME_NAME;
+      iframe.style.display = "none";
+      document.body.appendChild(iframe);
+    }
+
+    const form = document.createElement("form");
+    form.action = parsed.actionUrl;
+    form.method = "POST";
+    form.target = FRAME_NAME;
+    form.style.display = "none";
+
+    for (const entry of parsed.entries) {
+      const key = normalizeFieldKey(entry.placeholder);
+      let value = "";
+      if (key === "name") {
+        value = member.displayName || "";
+      } else if (key === "message") {
+        value = messageText || "";
+      } else if (Object.prototype.hasOwnProperty.call(normalizedParams, key)) {
+        value = normalizedParams[key];
+      }
+      const input = document.createElement("input");
+      input.type = "hidden";
+      input.name = "entry." + entry.entryId;
+      input.value = value;
+      form.appendChild(input);
+    }
+
+    document.body.appendChild(form);
+    form.submit();
+    form.remove();
+  }
+
+  function performCopyMessage(message, card, button) {
     const members = JSON.parse(sessionStorage.getItem("members") || "[]");
     const member = members.find((m) => m.uuid === card.id);
     if (!member) {
       alert("Couldn't find this member's data to build the message.");
       return;
     }
-    const filled = fillTemplate(messageTemplate, getMessageParams(member, card));
+    const filled = fillTemplate(message.messageText, getMessageParams(member, card));
+    if (message.formLink && message.formLink.trim()) {
+      submitToGoogleForm(message.formLink.trim(), member, card, filled);
+    }
     navigator.clipboard.writeText(filled).then(
       () => flashCopiedFeedback(button),
       () => alert("Couldn't copy the message to the clipboard.")
     );
+  }
+
+  function copyMessageForCard(card, button, evt) {
+    if (!messagesHaveContent()) return;
+    if (evt && evt.ctrlKey) {
+      showMessagePicker(card, button);
+      return;
+    }
+    closeMessagePicker();
+    const active = getActiveMessage();
+    if (!active.messageText.trim()) return;
+    performCopyMessage(active, card, button);
+  }
+
+  let messagePickerEl = null;
+  let messagePickerButton = null;
+
+  function closeMessagePicker() {
+    if (messagePickerEl) {
+      messagePickerEl.remove();
+      messagePickerEl = null;
+    }
+    messagePickerButton = null;
+  }
+
+  function showMessagePicker(card, button) {
+    closeMessagePicker();
+    const candidates = messages.filter((m) => m.messageText.trim());
+    if (!candidates.length) return;
+
+    const rect = button.getBoundingClientRect();
+    const picker = document.createElement("div");
+    picker.style.cssText =
+      "position:fixed;background:#fff;border:1px solid #ccc;border-radius:6px;" +
+      "box-shadow:0 4px 12px rgba(0,0,0,0.25);z-index:2147483647;min-width:160px;" +
+      "max-height:240px;overflow:auto;font-family:sans-serif;font-size:13px;padding:4px;";
+    picker.style.top = rect.bottom + 4 + "px";
+    picker.style.left = rect.left + "px";
+
+    for (const message of candidates) {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.textContent = message.messageName || "(untitled)";
+      item.style.cssText =
+        "display:block;width:100%;text-align:left;padding:6px 10px;border:none;" +
+        "background:none;cursor:pointer;color:#222;border-radius:4px;";
+      item.addEventListener("mouseenter", () => {
+        item.style.background = "#eef";
+      });
+      item.addEventListener("mouseleave", () => {
+        item.style.background = "none";
+      });
+      item.addEventListener("click", (clickEvt) => {
+        clickEvt.stopPropagation();
+        closeMessagePicker();
+        performCopyMessage(message, card, button);
+      });
+      picker.appendChild(item);
+    }
+
+    document.body.appendChild(picker);
+    messagePickerEl = picker;
+    messagePickerButton = button;
+  }
+
+  function handleOutsideMessagePickerClick(evt) {
+    if (!messagePickerEl) return;
+    if (messagePickerEl.contains(evt.target)) return;
+    if (messagePickerButton && messagePickerButton.contains(evt.target)) return;
+    closeMessagePicker();
   }
 
   async function readPastedCardFromClipboard() {
@@ -872,7 +1092,9 @@
         Card</strong> (copies that card's data to the clipboard),
         <strong>Copy Message</strong> (only shown once you've written a
         message in the <strong>Messages</strong> tab of this dialog — copies
-        that member's filled-in message to the clipboard),
+        that member's filled-in version of whichever message tab is active
+        to the clipboard; <kbd>Ctrl</kbd>+click it to pick a different
+        message from a list instead),
         <strong>Paste Card Before</strong> (inserts a card you copied
         earlier just before this one), <strong>Delete Card</strong>, and
         <strong>Open in LCR</strong> (opens that member's profile on Leader
@@ -952,16 +1174,32 @@
     return section;
   }
 
+  function flashTextButtonFeedback(button, tempText) {
+    const original = button.textContent;
+    button.disabled = true;
+    button.textContent = tempText;
+    setTimeout(() => {
+      button.textContent = original;
+      button.disabled = false;
+    }, 1200);
+  }
+
   function buildMessagesSection() {
     const section = document.createElement("div");
 
     const description = document.createElement("p");
     description.style.cssText = "margin-top:0;";
     description.textContent =
-      "Write a message once, then copy a filled-in version for each member " +
-      "from their card's toolbar — handy for sending similar text or email " +
-      "messages to many members without composing each one by hand.";
+      "Write one or more messages — each gets its own tab below — then copy " +
+      "a filled-in version for each member from their card's toolbar. The " +
+      "Copy Message button copies whichever tab is active; Ctrl+click it to " +
+      "pick a different message from a list instead.";
     section.appendChild(description);
+
+    const tabStrip = document.createElement("div");
+    tabStrip.style.cssText =
+      "display:flex;flex-wrap:wrap;align-items:flex-end;gap:4px;margin-bottom:10px;" +
+      "border-bottom:1px solid #ddd;padding-bottom:0;";
 
     const howTo = document.createElement("p");
     howTo.innerHTML =
@@ -972,24 +1210,19 @@
     section.appendChild(howTo);
 
     const textarea = document.createElement("textarea");
-    textarea.value = messageTemplate;
     textarea.rows = 6;
     textarea.placeholder = "Hi <FIRST NAME>, ...";
     textarea.style.cssText =
       "width:100%;box-sizing:border-box;padding:8px;border:1px solid #ccc;" +
       "border-radius:4px;font-size:14px;font-family:inherit;resize:vertical;";
 
-    function syncTemplateFromTextarea() {
-      messageTemplate = textarea.value;
-      try {
-        localStorage.setItem(MESSAGE_TEMPLATE_KEY, messageTemplate);
-      } catch (e) {
-        // localStorage may be unavailable - the template just won't persist
-      }
+    function syncActiveTextFromTextarea() {
+      getActiveMessage().messageText = textarea.value;
+      saveMessages();
       refreshMessageButtons();
     }
 
-    textarea.addEventListener("input", syncTemplateFromTextarea);
+    textarea.addEventListener("input", syncActiveTextFromTextarea);
 
     function insertTagAtCursor(tagName) {
       const insertText = `<${tagName}>`;
@@ -999,7 +1232,7 @@
       const cursorPos = start + insertText.length;
       textarea.focus();
       textarea.setSelectionRange(cursorPos, cursorPos);
-      syncTemplateFromTextarea();
+      syncActiveTextFromTextarea();
     }
 
     const tagList = document.createElement("div");
@@ -1022,7 +1255,140 @@
     renderTagList();
     section.appendChild(tagList);
 
+    section.appendChild(tabStrip);
     section.appendChild(textarea);
+
+    const formLinkLabel = document.createElement("p");
+    formLinkLabel.style.cssText = "margin:16px 0 4px;font-weight:bold;color:#222;";
+    formLinkLabel.textContent = "Google Form Prefilled Link (optional)";
+    section.appendChild(formLinkLabel);
+
+    const formLinkHelp = document.createElement("p");
+    formLinkHelp.style.cssText = "margin-top:0;color:#555;";
+    formLinkHelp.innerHTML =
+      "When set, Copy Message also submits a response to this Google Form. " +
+      "Get a prefilled link from the form's ⋮ menu → <strong>Get " +
+      "pre-filled link</strong>, answering each question with the name of " +
+      "the card field it should receive (e.g. <code>phone</code>, " +
+      "<code>email</code>, or <code>address</code>) — matching ignores " +
+      "case and spaces. Use <code>name</code> for the member's name and " +
+      "<code>message</code> for the filled-in message, since neither is a " +
+      "labeled card field.";
+    section.appendChild(formLinkHelp);
+
+    const formLinkInput = document.createElement("input");
+    formLinkInput.type = "text";
+    formLinkInput.placeholder = "https://docs.google.com/forms/d/e/.../viewform?usp=pp_url&entry.123=...";
+    formLinkInput.style.cssText =
+      "width:100%;box-sizing:border-box;padding:8px;border:1px solid #ccc;" +
+      "border-radius:4px;font-size:14px;font-family:inherit;";
+    formLinkInput.addEventListener("input", () => {
+      getActiveMessage().formLink = formLinkInput.value;
+      saveMessages();
+    });
+    section.appendChild(formLinkInput);
+
+    function refreshEditorForActive() {
+      const active = getActiveMessage();
+      textarea.value = active.messageText;
+      formLinkInput.value = active.formLink || "";
+    }
+
+    function updateTabStripHighlighting() {
+      for (const wrapper of tabStrip.querySelectorAll("[data-message-id]")) {
+        const isActive = wrapper.dataset.messageId === activeMessageId;
+        wrapper.style.borderColor = isActive ? "#00008B" : "#ccc";
+        wrapper.style.background = isActive ? "#e6e6fa" : "#f7f7f7";
+      }
+    }
+
+    function setActiveMessage(id) {
+      if (activeMessageId === id) return;
+      activeMessageId = id;
+      saveMessages();
+      updateTabStripHighlighting();
+      refreshEditorForActive();
+    }
+
+    function buildMessageTab(message) {
+      const wrapper = document.createElement("div");
+      wrapper.dataset.messageId = message.id;
+      const isActive = message.id === activeMessageId;
+      wrapper.style.cssText =
+        "display:flex;align-items:center;gap:2px;padding:2px 2px 2px 8px;" +
+        "border:1px solid;border-bottom:none;border-radius:4px 4px 0 0;" +
+        `border-color:${isActive ? "#00008B" : "#ccc"};background:${isActive ? "#e6e6fa" : "#f7f7f7"};`;
+
+      const nameInput = document.createElement("input");
+      nameInput.type = "text";
+      nameInput.value = message.messageName;
+      nameInput.title = "Rename this message";
+      nameInput.style.cssText =
+        "border:none;background:transparent;font-size:13px;color:#222;padding:6px 2px;" +
+        "width:110px;";
+      nameInput.addEventListener("focus", () => setActiveMessage(message.id));
+      nameInput.addEventListener("input", () => {
+        message.messageName = nameInput.value;
+        saveMessages();
+      });
+      wrapper.appendChild(nameInput);
+
+      if (messages.length > 1) {
+        const deleteBtn = document.createElement("button");
+        deleteBtn.type = "button";
+        deleteBtn.textContent = "✕";
+        deleteBtn.title = "Delete this message";
+        deleteBtn.style.cssText =
+          "border:none;background:none;color:#888;cursor:pointer;font-size:12px;padding:4px 6px;";
+        deleteBtn.addEventListener("click", () => {
+          const idx = messages.findIndex((m) => m.id === message.id);
+          if (idx === -1) return;
+          messages.splice(idx, 1);
+          if (activeMessageId === message.id) {
+            activeMessageId = messages[Math.max(0, idx - 1)].id;
+          }
+          saveMessages();
+          renderTabStrip();
+          refreshEditorForActive();
+          refreshMessageButtons();
+        });
+        wrapper.appendChild(deleteBtn);
+      }
+
+      return wrapper;
+    }
+
+    function renderTabStrip() {
+      tabStrip.innerHTML = "";
+      for (const message of messages) {
+        tabStrip.appendChild(buildMessageTab(message));
+      }
+      const addBtn = document.createElement("button");
+      addBtn.type = "button";
+      addBtn.textContent = "+";
+      addBtn.title = "Add a new message";
+      addBtn.style.cssText =
+        "margin-left:4px;margin-bottom:4px;padding:4px 10px;border-radius:4px;" +
+        "border:1px solid #00008B;background:#fff;color:#00008B;cursor:pointer;font-size:14px;";
+      addBtn.addEventListener("click", () => {
+        const message = {
+          id: makeMessageId(),
+          messageName: `Message ${messages.length + 1}`,
+          messageText: "",
+          formLink: ""
+        };
+        messages.push(message);
+        activeMessageId = message.id;
+        saveMessages();
+        renderTabStrip();
+        refreshEditorForActive();
+        refreshMessageButtons();
+      });
+      tabStrip.appendChild(addBtn);
+    }
+
+    renderTabStrip();
+    refreshEditorForActive();
 
     const help = document.createElement("p");
     help.style.cssText = "margin-top:12px;color:#555;";
@@ -1035,11 +1401,95 @@
     const limitation = document.createElement("p");
     limitation.style.cssText = "margin-top:12px;color:#555;font-style:italic;";
     limitation.textContent =
-      "This message is remembered only on this site. A message saved here " +
+      "These messages are remembered only on this site. Messages saved here " +
       "won't show up on a grid built from a table on another " +
       "churchofjesuschrist.org page (like LCR), and vice versa — each site " +
-      "keeps its own.";
+      "keeps its own set. Use Copy Messages / Paste Messages below to move " +
+      "them to another site or computer.";
     section.appendChild(limitation);
+
+    const transferRow = document.createElement("div");
+    transferRow.style.cssText =
+      "margin-top:16px;padding-top:12px;border-top:1px solid #ddd;" +
+      "display:flex;gap:8px;flex-wrap:wrap;align-items:center;";
+
+    const transferLabel = document.createElement("span");
+    transferLabel.style.cssText = "color:#555;font-size:13px;margin-right:4px;";
+    transferLabel.textContent = "Move these messages to another site or computer:";
+    transferRow.appendChild(transferLabel);
+
+    function makeTransferButton(label) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = label;
+      btn.style.cssText =
+        "padding:8px 14px;border-radius:4px;border:1px solid #00008B;" +
+        "background:#fff;color:#00008B;cursor:pointer;font-size:14px;";
+      return btn;
+    }
+
+    const copyMessagesBtn = makeTransferButton("Copy Messages");
+    copyMessagesBtn.title = "Copy all messages on this tab strip to the clipboard";
+    copyMessagesBtn.addEventListener("click", () => {
+      const payload = JSON.stringify(
+        messages.map(({ messageName, messageText, formLink }) => ({ messageName, messageText, formLink })),
+        null,
+        2
+      );
+      navigator.clipboard.writeText(payload).then(
+        () => flashTextButtonFeedback(copyMessagesBtn, "Copied!"),
+        () => alert("Couldn't copy messages to the clipboard.")
+      );
+    });
+    transferRow.appendChild(copyMessagesBtn);
+
+    const pasteMessagesBtn = makeTransferButton("Paste Messages");
+    pasteMessagesBtn.title = "Add messages copied from another instance's clipboard";
+    pasteMessagesBtn.addEventListener("click", async () => {
+      let text = "";
+      try {
+        text = await navigator.clipboard.readText();
+      } catch (e) {
+        alert("Couldn't read the clipboard.");
+        return;
+      }
+      let parsed;
+      try {
+        parsed = JSON.parse(text);
+      } catch (e) {
+        alert(
+          "Clipboard doesn't contain valid message data. Use Copy Messages on " +
+          "another instance first, then try pasting again."
+        );
+        return;
+      }
+      const entries = Array.isArray(parsed) ? parsed : [parsed];
+      const imported = entries
+        .filter((e) => e && typeof e === "object")
+        .map((e) => ({
+          id: makeMessageId(),
+          messageName: String(e.messageName ?? e.name ?? "Imported Message"),
+          messageText: String(e.messageText ?? e.text ?? ""),
+          formLink: String(e.formLink ?? "")
+        }));
+      if (!imported.length) {
+        alert(
+          "Clipboard doesn't contain valid message data. Use Copy Messages on " +
+          "another instance first, then try pasting again."
+        );
+        return;
+      }
+      messages.push(...imported);
+      activeMessageId = imported[0].id;
+      saveMessages();
+      renderTabStrip();
+      refreshEditorForActive();
+      refreshMessageButtons();
+      flashTextButtonFeedback(pasteMessagesBtn, `Added ${imported.length}!`);
+    });
+    transferRow.appendChild(pasteMessagesBtn);
+
+    section.appendChild(transferRow);
 
     section.appendChild(buildImportValuesSection(renderTagList));
 
@@ -1208,8 +1658,8 @@
       return { label, radio };
     }
 
-    const createOption = makeRadioOption("wpd-unmatched", "create", "Create a new card for it", true);
-    const ignoreOption = makeRadioOption("wpd-unmatched", "ignore", "Ignore it", false);
+    const createOption = makeRadioOption("wpd-unmatched", "create", "Create a new card for it", false);
+    const ignoreOption = makeRadioOption("wpd-unmatched", "ignore", "Ignore it", true);
     unmatchedRow.appendChild(createOption.label);
     unmatchedRow.appendChild(ignoreOption.label);
     section.appendChild(unmatchedRow);
@@ -1648,6 +2098,7 @@
     tag("directory").addEventListener("drop", handleDrop);
     tag("directory").addEventListener("dragend", handleDragEnd);
     document.addEventListener("click", handleOutsideMenuClick);
+    document.addEventListener("click", handleOutsideMessagePickerClick);
     wireImageFallbacks();
   }
 

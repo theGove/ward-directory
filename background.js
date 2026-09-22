@@ -272,8 +272,9 @@ function showWrongSiteMessage() {
   const message = document.createElement("div");
   message.style.cssText = "margin-bottom:16px;font-size:15px;color:#222;";
   message.textContent =
-    "Ward Photo Directory only works on the Church's member directory or " +
-    "Leader and Clerk Resources (LCR). Navigate to one of those sites, then " +
+    "You should be logged in to the unit directory at " +
+    "directory.churchofjesuschrist.org, or on a table of member data at " +
+    "lcr.churchofjesuschrist.org. Navigate to one of those sites, then " +
     "click the toolbar icon again.";
   box.appendChild(message);
 
