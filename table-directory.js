@@ -889,12 +889,23 @@
     return { actionUrl: url.origin + pathname, entries };
   }
 
-  // Submits a hidden POST to a Google Form (via a hidden iframe, so the page
-  // never navigates) using a prefilled link only to learn which entry id goes
-  // with which card field - the actual values come from this member's card.
-  function submitToGoogleForm(formLink, member, card, messageText) {
+  // Submits a Google Form response as a GET request opened in a small,
+  // auto-closed window (see submitToGoogleForm callers) using a prefilled
+  // link only to learn which entry id goes with which card field - the
+  // actual values come from this member's card. A question that isn't one
+  // of the special keys or a card field just resubmits its own prefilled
+  // placeholder text verbatim, so it can carry a fixed default answer.
+  function submitToGoogleForm(formLink, member, card, messageText, messageName) {
     const parsed = parseGoogleFormLink(formLink);
-    if (!parsed) return;
+    if (!parsed) {
+      console.warn(
+        "Ward Directory: Google Form link didn't parse, so nothing was submitted. " +
+          "Make sure it's the full prefilled link (starts with https://docs.google.com/forms/..." +
+          "/viewform and has at least one entry.<number>=... parameter) - a shortened forms.gle link won't work.",
+        formLink
+      );
+      return;
+    }
 
     const params = getMessageParams(member, card);
     const normalizedParams = {};
@@ -902,42 +913,49 @@
       normalizedParams[normalizeFieldKey(key)] = params[key];
     }
 
-    const FRAME_NAME = "wpd-form-submit-frame";
-    let iframe = document.getElementById(FRAME_NAME);
-    if (!iframe) {
-      iframe = document.createElement("iframe");
-      iframe.id = FRAME_NAME;
-      iframe.name = FRAME_NAME;
-      iframe.style.display = "none";
-      document.body.appendChild(iframe);
-    }
-
-    const form = document.createElement("form");
-    form.action = parsed.actionUrl;
-    form.method = "POST";
-    form.target = FRAME_NAME;
-    form.style.display = "none";
-
+    // A POST via a hidden iframe would need frame-src permission to load
+    // docs.google.com, which churchofjesuschrist.org's CSP doesn't grant
+    // (and we have no host permission to change that). A GET submitted as
+    // a normal top-level navigation isn't subject to that restriction, so
+    // we open it in a reused named window instead of a hidden iframe.
+    const query = new URLSearchParams();
     for (const entry of parsed.entries) {
       const key = normalizeFieldKey(entry.placeholder);
-      let value = "";
+      let value;
       if (key === "name") {
         value = member.displayName || "";
       } else if (key === "message") {
         value = messageText || "";
+      } else if (key === "memberid") {
+        value = member.uuid || "";
+      } else if (key === "messagetitle") {
+        value = messageName || "";
       } else if (Object.prototype.hasOwnProperty.call(normalizedParams, key)) {
         value = normalizedParams[key];
+      } else {
+        value = entry.placeholder;
       }
-      const input = document.createElement("input");
-      input.type = "hidden";
-      input.name = "entry." + entry.entryId;
-      input.value = value;
-      form.appendChild(input);
+      query.append("entry." + entry.entryId, value);
     }
 
-    document.body.appendChild(form);
-    form.submit();
-    form.remove();
+    const submitUrl = parsed.actionUrl + "?" + query.toString();
+    const submitWindow = window.open(submitUrl, "wpd-form-submit-target", "width=300,height=300");
+    if (!submitWindow) {
+      console.warn(
+        "Ward Directory: couldn't open the Google Form submission window - " +
+          "the browser's popup blocker may have stopped it. Allow popups for this site to use Copy Message with a form link."
+      );
+      return;
+    }
+    // Give the navigation time to reach Google's server before closing it -
+    // there's no load event we can trust across origins to signal "done".
+    setTimeout(() => {
+      try {
+        submitWindow.close();
+      } catch (e) {
+        // ignore - window may already be closed
+      }
+    }, 1500);
   }
 
   function performCopyMessage(message, card, button) {
@@ -949,7 +967,7 @@
     }
     const filled = fillTemplate(message.messageText, getMessageParams(member, card));
     if (message.formLink && message.formLink.trim()) {
-      submitToGoogleForm(message.formLink.trim(), member, card, filled);
+      submitToGoogleForm(message.formLink.trim(), member, card, filled, message.messageName);
     }
     navigator.clipboard.writeText(filled).then(
       () => flashCopiedFeedback(button),
@@ -1294,11 +1312,16 @@
       "When set, Copy Message also submits a response to this Google Form. " +
       "Get a prefilled link from the form's ⋮ menu → <strong>Get " +
       "pre-filled link</strong>, answering each question with the name of " +
-      "the card field it should receive (e.g. <code>phone</code>, " +
-      "<code>email</code>, or <code>memberid</code>) — matching ignores " +
-      "case and spaces. Use <code>name</code> for the member's name and " +
-      "<code>message</code> for the filled-in message, since neither is a " +
-      "labeled card field.";
+      "the card field it should receive (e.g. <code>phone</code> or " +
+      "<code>email</code>) — matching ignores case and spaces. Use " +
+      "<code>name</code> for the member's name, <code>message</code> for " +
+      "the filled-in message, <code>memberid</code> for the member's " +
+      "directory ID, and <code>messagetitle</code> for the name of this " +
+      "message (as set in the tab above) - none of these are labeled card " +
+      "fields. Any other question keeps whatever answer you prefilled it " +
+      "with when you got the link. Submitting briefly opens (and reuses) a " +
+      "background browser tab, since this site's security policy blocks a " +
+      "fully silent submission.";
     section.appendChild(formLinkHelp);
 
     const formLinkInput = document.createElement("input");
