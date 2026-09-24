@@ -83,9 +83,40 @@ workers can't share globals with page contexts.
   "helpfully" collapse in an unrelated change.
 
 - Both grid scripts hide (not destroy) the original page's `<body>`
-  contents in a `#wpd-original-content` wrapper before rendering the grid,
-  so closing the grid (✕, top right) restores the original DOM instantly
-  without a reload.
+  contents before rendering the grid, so closing the grid (✕, top right)
+  restores the original DOM instantly without a reload. `hideOriginalContent()`
+  sets `style.display = "none"` directly (via the CSSOM) on each of
+  `<body>`'s existing top-level children, rather than moving content into a
+  wrapper div or injecting a `<style>` rule:
+  - Moving nodes (removing them from one parent and appending them under
+    another) fires `disconnectedCallback`/`connectedCallback` on any custom
+    elements inside them. Some pages (e.g.
+    `directory.churchofjesuschrist.org`/`lcr.churchofjesuschrist.org`)
+    define custom elements in their header (like the profile monogram)
+    whose `connectedCallback` renders additively rather than idempotently,
+    so a wrapper-div move was duplicating that markup.
+  - An injected `<style>` element is a stylesheet, so on a page with a
+    strict `style-src` CSP (common on sites built with CSS-in-JS, which
+    `directory.churchofjesuschrist.org` is - note the styled-components-style
+    `sc-xxxx` class names) the browser can silently refuse to apply it,
+    leaving everything - including a map widget - still showing. Setting
+    `element.style.display` via the CSSOM isn't gated by `style-src` the way
+    `<style>`/`<link>` tags and markup-parsed `style="..."` attributes are.
+  - The hide is applied with `!important` (`style.setProperty("display",
+    "none", "important")`) - a plain inline style can still lose to an
+    `!important` rule in the page's own stylesheet, which is exactly what
+    was happening to `#__next` on this page.
+  - Each hidden top-level element also gets its own `MutationObserver`
+    watching its `style` attribute, re-forcing `display:none` whenever
+    something resets it - this page's shared `<platform-header>` web
+    component (present across the org's other sites too) keeps re-applying
+    its own inline `display`, so a one-time hide didn't stick on it.
+  - A separate `MutationObserver` on `<body>` hides anything the page adds
+    there *after* the grid is built too (e.g. a map that finishes loading
+    late), instead of only whatever was already there at that moment.
+  - Every element our own scripts append directly to `<body>` (grid root,
+    loading overlay, instructions modal, send-message dialog) is marked with
+    `data-wpd-keep` so this leaves it alone.
 
 - Grid state (member data for CSV export and for the message-template
   feature's per-member lookups) is stashed in `sessionStorage.members`
@@ -144,3 +175,14 @@ workers can't share globals with page contexts.
   loads them using whatever session cookies exist for that origin, so the
   user must already be logged in to the directory site for those images
   to resolve on the table-import path.
+- **Download Images** (main menu → Member ID / Member Name popout) exists
+  only in photo-directory.js - a deliberate divergence from the "mirror
+  both files" rule. It `fetch()`es each visible card's photo URL (same-origin
+  on the directory site) and bundles them into one `member-photos.zip` via a
+  small built-in store-only zip writer (`buildZip`/`crc32` - no library,
+  since there's no bundler). It was removed from table-directory.js because
+  there the photo URLs are cross-origin (e.g. from LCR): `<img>` tags display
+  them fine, but script can't read their bytes without CORS headers from the
+  photo API (a canvas would be tainted), and making it work would need a
+  host permission or the `downloads` permission - see the permissions rule
+  above.

@@ -17,12 +17,27 @@ async function promptTableAction() {
   const PHOTO_BASE_URL = "https://directory.churchofjesuschrist.org/api/v4/photos/members/";
 
   function findUuid(row) {
-    for (const el of row.querySelectorAll("*")) {
+    // Include the row itself, not just its descendants - some tables (e.g.
+    // Eden) put the member id directly on the <tr id="..."> rather than on
+    // a descendant element.
+    const elements = [row, ...row.querySelectorAll("*")];
+
+    for (const el of elements) {
       for (const attr of el.attributes) {
-        const value = attr.value.trim();
-        if (UUID_STRICT.test(value)) return value;
+        if (UUID_STRICT.test(attr.value.trim())) return attr.value.trim();
       }
     }
+
+    // No attribute is *exactly* a UUID - fall back to a substring match, which
+    // catches ids embedded in a larger attribute value, like an href such as
+    // "/mlt/records/finding-lost-members/details?id=<uuid>".
+    for (const el of elements) {
+      for (const attr of el.attributes) {
+        const match = attr.value.match(UUID_LOOSE);
+        if (match) return match[0];
+      }
+    }
+
     const textMatch = (row.textContent || "").match(UUID_LOOSE);
     return textMatch ? textMatch[0] : null;
   }
@@ -45,6 +60,19 @@ async function promptTableAction() {
     const last = name.slice(0, commaIdx).trim();
     const first = name.slice(commaIdx + 1).trim();
     return (first + " " + last).trim();
+  }
+
+  // LCR reports spell the same field differently depending on the report ("E-Mail" vs.
+  // "Individual E-mail", "Phone Number" vs. "Individual Phone") - standardize to a single
+  // label so downstream matching (Copy Message's contact-field detection, message <TAG>
+  // names) doesn't have to special-case every variant. Only LCR reports are inconsistent
+  // this way, so this is scoped to that host.
+  function normalizeLcrFieldLabel(label) {
+    if (location.hostname !== "lcr.churchofjesuschrist.org") return label;
+    const reduced = (label || "").toLowerCase().replace(/\s+/g, "");
+    if (reduced === "e-mail" || reduced === "individuale-mail") return "Email";
+    if (reduced === "individualphone" || reduced === "phonenumber") return "Phone";
+    return label;
   }
 
   function findPageTitle() {
@@ -100,7 +128,7 @@ async function promptTableAction() {
 
         const cells = Array.from(row.querySelectorAll(":scope > td"));
         const details = cells.map((td, i) => ({
-          label: headerCells[i] || ("Column " + (i + 1)),
+          label: normalizeLcrFieldLabel(headerCells[i] || ("Column " + (i + 1))),
           value: visibleText(td)
         }));
 

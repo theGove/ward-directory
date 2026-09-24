@@ -1,8 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Ward Photo Directory",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Turns a churchofjesuschrist.org directory page or member table into a browsable, exportable photo grid.",
+  "homepage_url": "https://ward-directory.blogspot.com/",
   "permissions": ["activeTab", "scripting"],
   "background": {
     "service_worker": "background.js"

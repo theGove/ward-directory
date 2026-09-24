@@ -39,26 +39,37 @@ in place (no new tab/window).
 
 - Click a card to flip it between photo and details (phone/email/address/callings).
 - Drag a card to reorder it anywhere in the grid.
-- Ctrl+click a card to remove it.
+- Ctrl+click a card to hide it (bring it back later with **Restore Hidden
+  Cards** in the **Adjust Cards** menu).
 - Alt+click a card to move it to the end of the grid.
 - Flip a card to its back to find a toolbar of icon buttons (hover one to see
   what it does): **Copy Card** (copies that card's HTML to the clipboard),
   **Copy Message** (only shown once you've written a message template in the
-  instructions modal's **Messages** tab — copies that member's filled-in
-  message to the clipboard), **Paste Card Before** (inserts a card you
-  copied earlier just before this one), **Delete Card** (same as
-  Ctrl+click), and **Open in LCR** (opens that member's profile on Leader
-  and Clerk Resources in a new tab).
+  instructions modal's **Messages** tab — opens that member's filled-in
+  message in a dialog where you can edit it (a dropdown at the top defaults to
+  the Messages tab's active message and lets you switch to another); **Copy Message** copies it to
+  the clipboard, **Log Message** submits it to the message's Google Form,
+  **Copy and Log** does both (those two only appear when the message has a
+  form link), and **Cancel** does nothing — every button closes the dialog), **Paste Card Before** (inserts a card you
+  copied earlier just before this one), **Hide Card** (same as Ctrl+click),
+  and **Open in LCR** (opens that member's profile on Leader and Clerk
+  Resources in a new tab).
 - Click the **✕** in the top right corner to close the grid — this hides the
   grid and restores the original page underneath it, without a reload.
 - Click the hamburger icon (top left) to open the menu:
-  Show Instructions & Tools (opens a modal, sized to 70% of the viewport,
+  Instructions & Tools (opens a modal, sized to 70% of the viewport,
   with **Instructions**, **Appearance**, and **Messages** tabs —
-  Instructions is shown by default), Download CSV, Show/Hide Names, Hide
-  Missing Photos, Hide Members not Flipped, Group/Ungroup By Address,
-  Shuffle, and Paste Copied Card (appends a card you copied earlier — with
-  Copy Card — to the end of the grid; if the clipboard doesn't hold a copied
-  card, it tells you to flip one over and copy it first).
+  Instructions is shown by default), Download CSV, **Download Images**
+  (opens a pop-out submenu: **Member ID** or **Member Name** — downloads
+  every visible card's photo in one .zip, each file named by that choice;
+  Member Directory grids only — not on LCR/table grids),
+  and **Adjust Cards**
+  (opens a pop-out submenu with Show/Hide Names, Hide Missing Photos, Hide
+  Members not Flipped, Restore Hidden Cards (only shown once Hide Missing
+  Photos or Hide Members not Flipped has hidden something — brings those
+  cards back), Group/Ungroup By Address, Shuffle, Flip All Cards (toggles
+  every card between photo and details), and Reset Cards (shows the photo
+  side on every card).
 - **Group By Address** groups all cards that share the same address into a
   single larger box with an address bar along the bottom (styled like the
   name bar on a card). On the main directory, addresses come from the

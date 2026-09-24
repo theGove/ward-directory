@@ -16,8 +16,9 @@
   }
 
   // messages: [{ id, messageName, messageText, formLink }, ...] - always at least one entry.
-  // formLink is an optional Google Form prefilled link - when set, Copy Message
-  // also submits a response to that form (see submitToGoogleForm).
+  // formLink is an optional Google Form prefilled link - when set, the Copy Message
+  // dialog offers Log Message / Copy and Log, which submit a response to that
+  // form (see submitToGoogleForm).
   let messages = [];
   let activeMessageId = "";
   try {
@@ -119,14 +120,14 @@
 
   function cardActionsHTML(uuid, canMessage) {
     const messageButton = messagesHaveContent() && canMessage
-      ? `<button type="button" class="card-icon-btn" data-card-action="copy-message" title="Copy Message (Ctrl+click to choose which one)" aria-label="Copy Message">${CARD_ICONS.message}</button>`
+      ? `<button type="button" class="card-icon-btn" data-card-action="copy-message" title="Copy Message" aria-label="Copy Message">${CARD_ICONS.message}</button>`
       : "";
     return `
     <div class="card-toolbar">
       <button type="button" class="card-icon-btn" data-card-action="copy" title="Copy Card" aria-label="Copy Card">${CARD_ICONS.copy}</button>
       ${messageButton}
       <button type="button" class="card-icon-btn" data-card-action="paste-before" title="Paste Card Before" aria-label="Paste Card Before">${CARD_ICONS.paste}</button>
-      <button type="button" class="card-icon-btn" data-card-action="delete" title="Delete Card" aria-label="Delete Card">${CARD_ICONS.delete}</button>
+      <button type="button" class="card-icon-btn" data-card-action="hide" title="Hide Card" aria-label="Hide Card">${CARD_ICONS.delete}</button>
       <a class="card-icon-btn" data-card-action="open-lcr" href="https://lcr.churchofjesuschrist.org/mlt/records/member-profile/${uuid}" target="_blank" rel="noopener noreferrer" title="Open in LCR" aria-label="Open in LCR">${CARD_ICONS.lcr}</a>
     </div>`;
   }
@@ -178,13 +179,16 @@
   }
 
   // The Copy Message action only makes sense when there's somewhere to send the
-  // message, so it requires a source-table column that actually carries contact
-  // info - LCR reports label these "Individual Email" / "Individual Phone".
+  // message, so it requires a source-table column that actually carries contact info.
+  // background.js's normalizeLcrFieldLabel standardizes LCR's various spellings
+  // ("Individual E-mail", "E-Mail", "Phone Number", ...) to "Email"/"Phone", but a
+  // table imported from elsewhere may still carry the original wording, so both forms
+  // are matched here.
   function detailsHaveContactField(details) {
     return (details || []).some((d) => {
       if (!d || !String(d.value || "").trim()) return false;
       const label = (d.label || "").trim();
-      return /^individual\s*E-mail$/i.test(label) || /^individual\s*phone$/i.test(label);
+      return /^(individual\s*)?e-?mail$/i.test(label) || /^(individual\s*)?phone$/i.test(label);
     });
   }
 
@@ -272,7 +276,7 @@
         btn.type = "button";
         btn.className = "card-icon-btn";
         btn.dataset.cardAction = "copy-message";
-        btn.title = "Copy Message (Ctrl+click to choose which one)";
+        btn.title = "Copy Message";
         btn.setAttribute("aria-label", "Copy Message");
         btn.innerHTML = CARD_ICONS.message;
         const copyBtn = toolbar.querySelector('[data-card-action="copy"]');
@@ -386,16 +390,38 @@
   }
 
   // Inserts (or replaces, if run before) a block of imported columns just before a
-  // card's toolbar, alongside whatever fields already show on that card's back.
+  // card's toolbar, alongside whatever fields already show on that card's back. A
+  // field whose label already appears elsewhere on the card (a base source-table
+  // field, or one added by Group By Address) is updated in place instead of being
+  // added again - old.remove() happens first so a field left over from a *previous*
+  // import doesn't falsely count as "already on the card" and block its own refresh.
   function applyImportedFieldsToCard(card, details) {
     const dataDiv = card.querySelector(".data");
     const toolbar = dataDiv.querySelector(".card-toolbar");
     const old = dataDiv.querySelector(".imported-fields");
     if (old) old.remove();
-    const wrapper = document.createElement("div");
-    wrapper.className = "imported-fields";
-    wrapper.innerHTML = detailsPairsHtml(details);
-    dataDiv.insertBefore(wrapper, toolbar);
+
+    const newDetails = [];
+    for (const detail of details) {
+      const label = (detail.label || "").trim().toLowerCase();
+      const existingLabel = Array.from(dataDiv.querySelectorAll(".data-label")).find(
+        (el) => el.textContent.trim().toLowerCase() === label
+      );
+      const existingItem = existingLabel && existingLabel.nextElementSibling;
+      if (existingItem && existingItem.classList.contains("data-item")) {
+        existingItem.dataset.rawValue = detail.value;
+        existingItem.innerHTML = detail.value;
+      } else {
+        newDetails.push(detail);
+      }
+    }
+
+    if (newDetails.length) {
+      const wrapper = document.createElement("div");
+      wrapper.className = "imported-fields";
+      wrapper.innerHTML = detailsPairsHtml(newDetails);
+      dataDiv.insertBefore(wrapper, toolbar);
+    }
   }
 
   // Used only for a Member ID with no existing card - there's no source-table data for
@@ -464,16 +490,28 @@
         <div id="menu-close" class="menu-item">
         <svg id="closeIcon" fill="inherit" style="width: 35px; height: 35px;" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M11.4 13.06l4.596 4.597a.749.749 0 101.06-1.06L12.461 12l4.596-4.596a.749.749 0 10-1.06-1.06L11.4 10.939 6.804 6.343a.749.749 0 10-1.06 1.06L10.339 12l-4.596 4.596a.749.749 0 101.06 1.06l4.597-4.595z"></path></svg>
         </div>
-        <div id="menu-show-instructions" class="menu-item">Show Instructions &amp; Tools</div>
+        <div id="menu-show-instructions" class="menu-item">Instructions &amp; Tools</div>
+        <div id="menu-data" class="menu-item">Data &raquo;</div>
+        <div id="menu-adjust-cards" class="menu-item">Adjust Cards &raquo;</div>
+    </div>
+    <div id="data-menu" class="popout-menu">
         <div id="menu-download-csv" class="menu-item">Download CSV</div>
+        <div id="menu-copy-tsv" class="menu-item">Copy for Spreadsheet</div>
+        <div id="menu-paste-spreadsheet" class="menu-item">Paste from Spreadsheet</div>
+        <div id="menu-upload-csv" class="menu-item">Upload CSV</div>
+        <input type="file" id="menu-upload-csv-input" accept=".csv,text/csv" style="display:none">
+    </div>
+    <div id="adjust-cards-menu" class="popout-menu">
         <div id="menu-hide-names" class="menu-item">Hide Names</div>
         <div id="menu-show-names" class="menu-item">Show Names</div>
+        <div id="menu-shuffle" class="menu-item">Shuffle</div>
         <div id="menu-hide-missing" class="menu-item">Hide Missing Photos</div>
         <div id="menu-hide-unflipped" class="menu-item">Hide Members not Flipped</div>
+        <div id="menu-restore-hidden" class="menu-item" style="display:none">Restore Hidden Cards</div>
         <div id="menu-group-address" class="menu-item">Group By Address</div>
         <div id="menu-ungroup-address" class="menu-item" style="display:none">Ungroup By Address</div>
-        <div id="menu-shuffle" class="menu-item">Shuffle</div>
-        <div id="menu-paste-card" class="menu-item">Paste Copied Card</div>
+        <div id="menu-flip-all" class="menu-item">Flip All Cards</div>
+        <div id="menu-reset-cards" class="menu-item">Reset Cards</div>
     </div>
     `;
   }
@@ -649,6 +687,20 @@
       z-index:10;
       overflow:auto;
     }
+    .popout-menu{
+      display:none;
+      color:#333;
+      background-color:#eee;
+      max-height:100vh;
+      position:fixed;
+      width: 200px;
+      padding: 5px;
+      z-index:10;
+      overflow:auto;
+    }
+    .popout-menu.open{
+      display:block;
+    }
     .selected{
       background-color:lightblue;
       color:darkblue;
@@ -675,7 +727,7 @@
       margin-left: 1em;
     }
     @media print {
-      #burger, #menu, .card-toolbar, .wpd-instructions-overlay, #wpd-close-grid { display: none !important; }
+      #burger, #menu, #adjust-cards-menu, .card-toolbar, .wpd-instructions-overlay, .wpd-send-message-overlay, #wpd-close-grid { display: none !important; }
       body, .card, .address-group {
         -webkit-print-color-adjust: exact;
         print-color-adjust: exact;
@@ -721,11 +773,11 @@
       if (actionBtn.dataset.cardAction === "copy") {
         copyCardToClipboard(card, actionBtn);
       } else if (actionBtn.dataset.cardAction === "copy-message") {
-        copyMessageForCard(card, actionBtn, evt);
+        copyMessageForCard(card, actionBtn);
       } else if (actionBtn.dataset.cardAction === "paste-before") {
         pasteCardBefore(card);
-      } else if (actionBtn.dataset.cardAction === "delete") {
-        card.remove();
+      } else if (actionBtn.dataset.cardAction === "hide") {
+        hideCard(card);
       }
       return;
     }
@@ -734,7 +786,7 @@
     if (!card) return;
 
     if (evt.ctrlKey) {
-      card.remove();
+      hideCard(card);
       return;
     }
     if (evt.altKey) {
@@ -826,6 +878,19 @@
     }
   }
 
+  function showToast(message) {
+    const toast = document.createElement("div");
+    toast.setAttribute("data-wpd-keep", "");
+    toast.textContent = message;
+    toast.style.cssText =
+      "position:fixed;left:50%;bottom:32px;transform:translateX(-50%);" +
+      "background:#00008B;color:#fff;padding:10px 20px;border-radius:6px;" +
+      "font-family:sans-serif;font-size:14px;z-index:2147483647;" +
+      "box-shadow:0 2px 8px rgba(0,0,0,0.3);";
+    document.body.appendChild(toast);
+    setTimeout(() => toast.remove(), 2500);
+  }
+
   function flashCopiedFeedback(button) {
     if (!button) return;
     const originalTitle = button.getAttribute("title");
@@ -904,7 +969,7 @@
           "/viewform and has at least one entry.<number>=... parameter) - a shortened forms.gle link won't work.",
         formLink
       );
-      return;
+      return false;
     }
 
     const params = getMessageParams(member, card);
@@ -943,9 +1008,9 @@
     if (!submitWindow) {
       console.warn(
         "Ward Directory: couldn't open the Google Form submission window - " +
-          "the browser's popup blocker may have stopped it. Allow popups for this site to use Copy Message with a form link."
+          "the browser's popup blocker may have stopped it. Allow popups for this site to use Log Message with a form link."
       );
-      return;
+      return false;
     }
     // Give the navigation time to reach Google's server before closing it -
     // there's no load event we can trust across origins to signal "done".
@@ -956,6 +1021,186 @@
         // ignore - window may already be closed
       }
     }, 1500);
+    return true;
+  }
+
+  // Shows the filled-in message in an editable modal before anything happens.
+  // A dropdown (defaulting to the message passed in - normally the one active
+  // on the Messages tab) switches which message is filled in. Copy Message
+  // copies the (possibly edited) text; Log Message and Copy and Log (only
+  // shown when the selected message has a Google Form link) submit it to that
+  // form, the latter also copying it. Every button closes the dialog; Cancel
+  // (or Escape / clicking the backdrop) does nothing else.
+  function showSendMessageDialog(initialMessage, member, card, button) {
+    const candidates = messages.filter((m) => m.messageText.trim());
+    if (!candidates.includes(initialMessage)) candidates.unshift(initialMessage);
+    let message = initialMessage;
+    let lastFilled = "";
+    const params = getMessageParams(member, card);
+
+    const overlay = document.createElement("div");
+    overlay.className = "wpd-send-message-overlay";
+    overlay.setAttribute("data-wpd-keep", "");
+    overlay.style.cssText =
+      "position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:2147483647;" +
+      "display:flex;align-items:center;justify-content:center;font-family:sans-serif;";
+
+    const box = document.createElement("div");
+    box.setAttribute("role", "dialog");
+    box.setAttribute("aria-modal", "true");
+    box.style.cssText =
+      "background:#fff;border-radius:8px;width:min(600px,90vw);max-height:80vh;" +
+      "box-shadow:0 4px 20px rgba(0,0,0,0.4);display:flex;flex-direction:column;overflow:hidden;";
+
+    const header = document.createElement("div");
+    header.style.cssText =
+      "padding:12px 20px;border-bottom:1px solid #ddd;flex:0 0 auto;" +
+      "font-size:18px;font-weight:bold;color:#00008B;";
+
+    const body = document.createElement("div");
+    body.style.cssText =
+      "padding:16px 20px;flex:1 1 auto;display:flex;flex-direction:column;gap:12px;" +
+      "color:#222;font-size:14px;overflow:auto;";
+
+    const pickerLabel = document.createElement("label");
+    pickerLabel.style.cssText = "display:flex;align-items:center;gap:8px;";
+    pickerLabel.appendChild(document.createTextNode("Message:"));
+    const picker = document.createElement("select");
+    picker.style.cssText =
+      "flex:1 1 auto;padding:4px 6px;border:1px solid #ccc;border-radius:4px;font-size:14px;";
+    for (const m of candidates) {
+      const option = document.createElement("option");
+      option.value = m.id;
+      option.textContent = m.messageName || "(untitled)";
+      picker.appendChild(option);
+    }
+    pickerLabel.appendChild(picker);
+    body.appendChild(pickerLabel);
+
+    const textarea = document.createElement("textarea");
+    textarea.rows = 12;
+    textarea.style.cssText =
+      "width:100%;box-sizing:border-box;padding:8px;border:1px solid #ccc;border-radius:4px;" +
+      "font-family:inherit;font-size:14px;line-height:1.4;resize:vertical;min-height:120px;";
+    body.appendChild(textarea);
+
+    const footer = document.createElement("div");
+    footer.style.cssText =
+      "display:flex;justify-content:flex-end;gap:8px;padding:12px 20px;" +
+      "border-top:1px solid #ddd;flex:0 0 auto;";
+
+    function makeDialogButton(label, primary) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = label;
+      btn.style.cssText =
+        "padding:6px 18px;border-radius:4px;cursor:pointer;font-size:14px;" +
+        (primary
+          ? "background:#00008B;color:#fff;border:1px solid #00008B;"
+          : "background:#fff;color:#333;border:1px solid #ccc;");
+      return btn;
+    }
+
+    const cancelBtn = makeDialogButton("Cancel", false);
+    const copyBtn = makeDialogButton("Copy Message", true);
+    const logBtn = makeDialogButton("Log Message", true);
+    logBtn.title = "Submit this message and member data to the Google Form";
+    const copyAndLogBtn = makeDialogButton("Copy and Log", true);
+    copyAndLogBtn.title = "Copy this message and submit it with member data to the Google Form";
+    footer.appendChild(cancelBtn);
+    footer.appendChild(copyBtn);
+    footer.appendChild(logBtn);
+    footer.appendChild(copyAndLogBtn);
+
+    function getFormLink() {
+      return (message.formLink || "").trim();
+    }
+
+    function selectMessage(m) {
+      message = m;
+      picker.value = m.id;
+      header.textContent =
+        (m.messageName || "Message") + (member.displayName ? " \u2014 " + member.displayName : "");
+      box.setAttribute("aria-label", header.textContent);
+      lastFilled = fillTemplate(m.messageText, params);
+      textarea.value = lastFilled;
+      textarea.scrollTop = 0;
+      const hasForm = !!getFormLink();
+      logBtn.style.display = hasForm ? "" : "none";
+      copyAndLogBtn.style.display = hasForm ? "" : "none";
+    }
+
+    picker.addEventListener("change", () => {
+      const next = candidates.find((m) => m.id === picker.value);
+      if (!next) return;
+      if (
+        textarea.value !== lastFilled &&
+        !window.confirm("Switching messages will discard your edits to this one. Continue?")
+      ) {
+        picker.value = message.id;
+        return;
+      }
+      selectMessage(next);
+    });
+
+    function close() {
+      document.removeEventListener("keydown", onKeydown, true);
+      overlay.remove();
+    }
+
+    // Copy is started before logging because the form submission opens a
+    // popup window, and the clipboard write needs this page to still have focus.
+    function copyText(text) {
+      navigator.clipboard.writeText(text).then(
+        () => flashCopiedFeedback(button),
+        () => alert("Couldn't copy the message to the clipboard.")
+      );
+    }
+
+    function logText(text) {
+      if (submitToGoogleForm(getFormLink(), member, card, text, message.messageName)) {
+        showToast("Message logged");
+      } else {
+        alert(
+          "Couldn't log the message. Check that the Google Form link is a full prefilled " +
+            "link and that popups are allowed for this site."
+        );
+      }
+    }
+
+    function finish(copy, log) {
+      const text = textarea.value;
+      close();
+      if (copy) copyText(text);
+      if (log) logText(text);
+    }
+
+    function onKeydown(evt) {
+      if (evt.key === "Escape") {
+        evt.preventDefault();
+        evt.stopPropagation();
+        close();
+      }
+    }
+
+    cancelBtn.addEventListener("click", close);
+    copyBtn.addEventListener("click", () => finish(true, false));
+    logBtn.addEventListener("click", () => finish(false, true));
+    copyAndLogBtn.addEventListener("click", () => finish(true, true));
+    overlay.addEventListener("click", (evt) => {
+      if (evt.target === overlay) close();
+    });
+    document.addEventListener("keydown", onKeydown, true);
+
+    selectMessage(initialMessage);
+    box.appendChild(header);
+    box.appendChild(body);
+    box.appendChild(footer);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    textarea.focus();
+    textarea.setSelectionRange(0, 0);
+    textarea.scrollTop = 0;
   }
 
   function performCopyMessage(message, card, button) {
@@ -965,84 +1210,17 @@
       alert("Couldn't find this member's data to build the message.");
       return;
     }
-    const filled = fillTemplate(message.messageText, getMessageParams(member, card));
-    if (message.formLink && message.formLink.trim()) {
-      submitToGoogleForm(message.formLink.trim(), member, card, filled, message.messageName);
-    }
-    navigator.clipboard.writeText(filled).then(
-      () => flashCopiedFeedback(button),
-      () => alert("Couldn't copy the message to the clipboard.")
-    );
+    showSendMessageDialog(message, member, card, button);
   }
 
-  function copyMessageForCard(card, button, evt) {
+  function copyMessageForCard(card, button) {
     if (!messagesHaveContent()) return;
-    if (evt && evt.ctrlKey) {
-      showMessagePicker(card, button);
-      return;
-    }
-    closeMessagePicker();
+    // Default to the Messages tab's active message, or the first one with text
+    // if that one is blank - the dialog's dropdown can switch to any other.
     const active = getActiveMessage();
-    if (!active.messageText.trim()) return;
-    performCopyMessage(active, card, button);
-  }
-
-  let messagePickerEl = null;
-  let messagePickerButton = null;
-
-  function closeMessagePicker() {
-    if (messagePickerEl) {
-      messagePickerEl.remove();
-      messagePickerEl = null;
-    }
-    messagePickerButton = null;
-  }
-
-  function showMessagePicker(card, button) {
-    closeMessagePicker();
-    const candidates = messages.filter((m) => m.messageText.trim());
-    if (!candidates.length) return;
-
-    const rect = button.getBoundingClientRect();
-    const picker = document.createElement("div");
-    picker.style.cssText =
-      "position:fixed;background:#fff;border:1px solid #ccc;border-radius:6px;" +
-      "box-shadow:0 4px 12px rgba(0,0,0,0.25);z-index:2147483647;min-width:160px;" +
-      "max-height:240px;overflow:auto;font-family:sans-serif;font-size:13px;padding:4px;";
-    picker.style.top = rect.bottom + 4 + "px";
-    picker.style.left = rect.left + "px";
-
-    for (const message of candidates) {
-      const item = document.createElement("button");
-      item.type = "button";
-      item.textContent = message.messageName || "(untitled)";
-      item.style.cssText =
-        "display:block;width:100%;text-align:left;padding:6px 10px;border:none;" +
-        "background:none;cursor:pointer;color:#222;border-radius:4px;";
-      item.addEventListener("mouseenter", () => {
-        item.style.background = "#eef";
-      });
-      item.addEventListener("mouseleave", () => {
-        item.style.background = "none";
-      });
-      item.addEventListener("click", (clickEvt) => {
-        clickEvt.stopPropagation();
-        closeMessagePicker();
-        performCopyMessage(message, card, button);
-      });
-      picker.appendChild(item);
-    }
-
-    document.body.appendChild(picker);
-    messagePickerEl = picker;
-    messagePickerButton = button;
-  }
-
-  function handleOutsideMessagePickerClick(evt) {
-    if (!messagePickerEl) return;
-    if (messagePickerEl.contains(evt.target)) return;
-    if (messagePickerButton && messagePickerButton.contains(evt.target)) return;
-    closeMessagePicker();
+    const initial = active.messageText.trim() ? active : messages.find((m) => m.messageText.trim());
+    if (!initial) return;
+    performCopyMessage(initial, card, button);
   }
 
   async function readPastedCardFromClipboard() {
@@ -1079,14 +1257,6 @@
     return pastedCard;
   }
 
-  async function pasteCardFromClipboard() {
-    showMenu(false);
-    const pastedCard = await readPastedCardFromClipboard();
-    if (!pastedCard) return;
-    tag("directory").appendChild(pastedCard);
-    pastedCard.scrollIntoView({ behavior: "smooth", block: "center" });
-  }
-
   async function pasteCardBefore(targetCard) {
     const pastedCard = await readPastedCardFromClipboard();
     if (!pastedCard) return;
@@ -1095,13 +1265,45 @@
   }
 
   let menuIsOpen = false;
+  let openPopoutId = null;
 
   function showMenu(show = true) {
     menuIsOpen = show;
     tag("menu").style.left = show ? "0" : "-210px";
+    if (!show) closeAllPopoutMenus();
+  }
+
+  // Aligns the popout's top with the menu item that opened it, and closes
+  // any other popout that was already showing so only one is open at a time.
+  function togglePopoutMenu(popoutId, anchorId) {
+    if (openPopoutId === popoutId) {
+      closePopoutMenu(popoutId);
+      return;
+    }
+    closeAllPopoutMenus();
+    const popout = tag(popoutId);
+    const anchor = tag(anchorId);
+    const parentMenu = anchor.closest("#menu, .popout-menu");
+    popout.style.left = parentMenu.getBoundingClientRect().right + "px";
+    popout.style.top = anchor.getBoundingClientRect().top + "px";
+    popout.classList.add("open");
+    openPopoutId = popoutId;
+  }
+
+  function closePopoutMenu(popoutId) {
+    tag(popoutId).classList.remove("open");
+    if (openPopoutId === popoutId) openPopoutId = null;
+  }
+
+  function closeAllPopoutMenus() {
+    if (openPopoutId) closePopoutMenu(openPopoutId);
   }
 
   const INSTRUCTIONS_HTML = `
+    <p>More detailed instructions can be found at
+    <a href="https://ward-directory.blogspot.com/" target="_blank"
+    rel="noopener noreferrer">ward-directory.blogspot.com</a>.</p>
+
     <h3>What this does</h3>
     <p>This photo grid was built from a member table on a
     churchofjesuschrist.org page (like an LCR report) rather than the
@@ -1127,42 +1329,74 @@
     <ul>
       <li><strong>Click</strong> a card to flip it between photo and details.</li>
       <li><strong>Drag</strong> a card to reorder it anywhere in the grid.</li>
-      <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+click a card to remove it.</li>
+      <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+click a card to hide it (bring it
+        back later with <strong>Restore Hidden Cards</strong> in the
+        <strong>Adjust Cards</strong> menu).</li>
       <li><kbd>Alt</kbd>/<kbd>Option</kbd>+click a card to move it to the end.</li>
       <li>Flip a card over to find a toolbar of icon buttons: <strong>Copy
         Card</strong> (copies that card's data to the clipboard),
         <strong>Copy Message</strong> (only shown once you've written a
         message in the <strong>Messages</strong> tab of this dialog and the
-        member has an "Individual E-mail" or "Individual Phone" column with a
-        value — copies that member's filled-in version of whichever message
-        tab is active to the clipboard; <kbd>Ctrl</kbd>+click it to pick a
-        different message from a list instead),
+        member has an "Email" or "Phone" column (LCR's "Individual E-mail" /
+        "Individual Phone" naming is recognized too) with a value — shows
+        that member's filled-in version of whichever message tab is active
+        in a dialog (with a dropdown to switch to a different message) so you can edit it, then <strong>Copy Message</strong>
+        copies it to the clipboard, and <strong>Log Message</strong> /
+        <strong>Copy and Log</strong> (when the message has a Google Form
+        link) submit it to the form, the latter copying it too),
         <strong>Paste Card Before</strong> (inserts a card you copied
-        earlier just before this one), <strong>Delete Card</strong>, and
-        <strong>Open in LCR</strong> (opens that member's profile on Leader
-        and Clerk Resources in a new tab). Hover an icon to see what it
+        earlier just before this one), <strong>Hide Card</strong> (same as
+        Ctrl/Cmd+click), and <strong>Open in LCR</strong> (opens that
+        member's profile on Leader and Clerk Resources in a new tab). Hover
+        an icon to see what it
         does.</li>
     </ul>
 
     <h3>The menu (hamburger icon, top left)</h3>
     <ul>
-      <li><strong>Download CSV</strong> — exports the current member list,
-        with a column for each column from the source table.</li>
-      <li><strong>Show/Hide Names</strong> — toggles the name label under each photo.</li>
-      <li><strong>Hide Missing Photos</strong> — removes cards without a usable photo.</li>
-      <li><strong>Hide Members not Flipped</strong> — keeps only cards you've
-        flipped (turning them back to the photo side), removing the rest.</li>
-      <li><strong>Group By Address</strong> — groups cards that share the
-        same address into a larger box with an address bar along the
-        bottom. Needs a column in the source table whose header contains
-        "Address"; if none is found, it lets you know.</li>
-      <li><strong>Ungroup By Address</strong> — undoes grouping, returning
-        cards to the regular grid.</li>
-      <li><strong>Shuffle</strong> — randomizes the card order.</li>
-      <li><strong>Paste Copied Card</strong> — appends a card you copied
-        earlier (with Copy Card) to the end of the grid. If the clipboard
-        doesn't hold a copied card, it tells you to flip one over and copy it
-        first.</li>
+      <li><strong>Data</strong> — opens a submenu with:
+        <ul>
+          <li><strong>Download CSV</strong> — exports the current member list
+            as a downloaded .csv file, with a column for each column from the
+            source table.</li>
+          <li><strong>Copy for Spreadsheet</strong> — copies the same data to
+            the clipboard as tab-separated values, ready to paste into a
+            spreadsheet.</li>
+          <li><strong>Paste from Spreadsheet</strong> / <strong>Upload
+            CSV</strong> — the reverse: bring data back in from a
+            spreadsheet or CSV file with a "Member Id" column, adding its
+            other columns to the back of each matching card already on the
+            page. A Member Id that doesn't match any card on the page is
+            ignored, and no new cards are created. This applies immediately
+            (no preview) — for more control (previewing rows, creating cards
+            for unmatched ids, clearing existing cards first), use
+            <strong>Import Values</strong> on the Messages tab instead.</li>
+        </ul>
+      </li>
+      <li><strong>Adjust Cards</strong> — opens a submenu with:
+        <ul>
+          <li><strong>Show/Hide Names</strong> — toggles the name label under each photo.</li>
+          <li><strong>Hide Missing Photos</strong> — hides cards without a
+            usable photo.</li>
+          <li><strong>Hide Members not Flipped</strong> — keeps only cards you've
+            flipped (turning them back to the photo side), hiding the rest.</li>
+          <li><strong>Restore Hidden Cards</strong> — brings back any cards
+            hidden by the two options above. Only shown once something is
+            hidden.</li>
+          <li><strong>Group By Address</strong> — groups cards that share the
+            same address into a larger box with an address bar along the
+            bottom. Needs a column in the source table whose header contains
+            "Address"; if none is found, it lets you know.</li>
+          <li><strong>Ungroup By Address</strong> — undoes grouping, returning
+            cards to the regular grid.</li>
+          <li><strong>Shuffle</strong> — randomizes the card order.</li>
+          <li><strong>Flip All Cards</strong> — toggles every card: cards
+            showing the photo switch to details, and cards showing details
+            switch back to the photo.</li>
+          <li><strong>Reset Cards</strong> — shows the photo side on every
+            card.</li>
+        </ul>
+      </li>
     </ul>
     <p>Click anywhere outside the menu to close it.</p>
     <p>Click the <strong>✕</strong> in the top right corner of the page to
@@ -1233,10 +1467,11 @@
     description.textContent =
       "Write one or more messages — each gets its own tab below — then copy " +
       "a filled-in version for each member from their card's toolbar. The " +
-      "Copy Message button copies whichever tab is active; Ctrl+click it to " +
-      'pick a different message from a list instead. It only shows on cards ' +
-      'with an "Individual E-mail" or "Individual Phone" column, since those ' +
-      "are the only ones with somewhere to send the message.";
+      "Copy Message button opens whichever tab is active in a " +
+      'dialog, where a dropdown can switch to another. It only shows on cards ' +
+      'with an "Email" or "Phone" column (LCR\'s "Individual E-mail" / ' +
+      '"Individual Phone" naming is recognized too), since those are the ' +
+      "only ones with somewhere to send the message.";
     section.appendChild(description);
 
     const tabStrip = document.createElement("div");
@@ -1309,7 +1544,7 @@
     const formLinkHelp = document.createElement("p");
     formLinkHelp.style.cssText = "margin-top:0;color:#555;";
     formLinkHelp.innerHTML =
-      "When set, Copy Message also submits a response to this Google Form. " +
+      "When set, Copy Message's dialog gets Log Message and Copy and Log buttons that submit a response to this Google Form. " +
       "Get a prefilled link from the form's ⋮ menu → <strong>Get " +
       "pre-filled link</strong>, answering each question with the name of " +
       "the card field it should receive (e.g. <code>phone</code> or " +
@@ -1768,6 +2003,7 @@
 
     const overlay = document.createElement("div");
     overlay.className = "wpd-instructions-overlay";
+    overlay.setAttribute("data-wpd-keep", "");
     overlay.style.cssText =
       "position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:2147483647;" +
       "display:flex;align-items:center;justify-content:center;font-family:sans-serif;";
@@ -1871,32 +2107,50 @@
     }
   }
 
+  function updateRestoreHiddenVisibility() {
+    const anyHidden = Array.from(document.querySelectorAll(".card")).some(
+      (card) => card.style.display === "none"
+    );
+    tag("menu-restore-hidden").style.display = anyHidden ? "" : "none";
+  }
+
+  function hideCard(card) {
+    card.style.display = "none";
+    updateRestoreHiddenVisibility();
+  }
+
   function hideMissing() {
     showMenu(false);
-    const menuItem = tag("menu-hide-missing");
-    if (menuItem) menuItem.remove();
     for (const div of document.querySelectorAll(".no-image")) {
       let elem = div;
       while (elem.className !== "card") {
         elem = elem.parentElement;
       }
-      elem.remove();
+      elem.style.display = "none";
     }
+    updateRestoreHiddenVisibility();
   }
 
   function hideUnflipped() {
     showMenu(false);
-    const menuItem = tag("menu-hide-unflipped");
-    if (menuItem) menuItem.remove();
     for (const div of document.querySelectorAll(".card")) {
       const photo = div.querySelector(".photo");
       if (photo.style.display === "none") {
         photo.style.display = "";
         div.querySelector(".data").style.display = "none";
       } else {
-        div.remove();
+        div.style.display = "none";
       }
     }
+    updateRestoreHiddenVisibility();
+  }
+
+  function restoreHiddenCards() {
+    showMenu(false);
+    for (const card of document.querySelectorAll(".card")) {
+      if (card.style.display === "none") card.style.display = "";
+    }
+    updateRestoreHiddenVisibility();
   }
 
   function removeRoommateFields(card) {
@@ -2021,6 +2275,21 @@
     }
   }
 
+  function flipAllCards() {
+    showMenu(false);
+    for (const card of document.querySelectorAll(".card")) {
+      flipCard(card);
+    }
+  }
+
+  function resetCards() {
+    showMenu(false);
+    for (const card of document.querySelectorAll(".card")) {
+      card.querySelector(".photo").style.display = "";
+      card.querySelector(".data").style.display = "none";
+    }
+  }
+
   // CSS zoom scales each card (and everything inside it) as a whole, so
   // nothing inside reflows out of proportion or grows scrollbars the way
   // resizing width alone did.
@@ -2098,6 +2367,10 @@
     return /[",\n]/.test(str) ? '"' + str.replace(/"/g, '""') + '"' : str;
   }
 
+  function tsvEscape(value) {
+    return String(value ?? "").replace(/[\t\n\r]/g, " ");
+  }
+
   function DownloadCSV() {
     const { headerCells, rows } = buildCsvRows();
     const data = [headerCells, ...rows].map((r) => r.map(csvEscape).join(","));
@@ -2109,19 +2382,87 @@
     hiddenElement.click();
   }
 
+  function copyForSpreadsheet() {
+    const { headerCells, rows } = buildCsvRows();
+    const data = [headerCells, ...rows].map((r) => r.map(tsvEscape).join("\t")).join("\n");
+    navigator.clipboard.writeText(data).catch(
+      () => alert("Couldn't copy the data to the clipboard.")
+    );
+  }
+
+  function explainCardDataImportFormat() {
+    alert(
+      "That data doesn't look usable - it needs a header row with a column named " +
+      "\"Member ID\" (any capitalization/spacing) plus at least one data row. That " +
+      "column's value is matched (case-insensitively) against the Member Id of each " +
+      "card already on the page - matching cards get the other columns added to " +
+      "their back. Any Member Id that doesn't match a card already on the page is " +
+      "ignored."
+    );
+  }
+
+  // Same matching as the Messages tab's Apply Values, but applied immediately with no
+  // preview/options: existing cards are never cleared, and a Member Id with no matching
+  // card on the page is always ignored (never creates a new card).
+  function integrateImportedTableIntoCards(parsed) {
+    importedHeaders = parsed.headers;
+    importedMemberIdIndex = parsed.memberIdIndex;
+    importedRows = parsed.rows;
+    applyImportedValues(false, false);
+    showToast("Data integrated into cards");
+  }
+
+  async function pasteDataIntoCards() {
+    let text = "";
+    try {
+      text = await navigator.clipboard.readText();
+    } catch (e) {
+      text = "";
+    }
+    const parsed = parseImportTable(text, "\t");
+    if (!parsed) {
+      explainCardDataImportFormat();
+      return;
+    }
+    integrateImportedTableIntoCards(parsed);
+  }
+
+  async function uploadCsvIntoCards(file) {
+    const text = await file.text();
+    const parsed = parseImportTable(text, ",");
+    if (!parsed) {
+      explainCardDataImportFormat();
+      return;
+    }
+    integrateImportedTableIntoCards(parsed);
+  }
+
   function wireUpInteractivity() {
     tag("burger").addEventListener("click", () => showMenu(true));
     tag("menu-close").addEventListener("click", () => showMenu(false));
     tag("menu-show-instructions").addEventListener("click", showInstructionsModal);
-    tag("menu-download-csv").addEventListener("click", DownloadCSV);
+    tag("menu-data").addEventListener("click", () => togglePopoutMenu("data-menu", "menu-data"));
+    tag("menu-download-csv").addEventListener("click", () => { showMenu(false); DownloadCSV(); });
+    tag("menu-copy-tsv").addEventListener("click", () => { showMenu(false); copyForSpreadsheet(); });
+    tag("menu-paste-spreadsheet").addEventListener("click", () => { showMenu(false); pasteDataIntoCards(); });
+    tag("menu-upload-csv").addEventListener("click", () => { showMenu(false); tag("menu-upload-csv-input").click(); });
+    tag("menu-upload-csv-input").addEventListener("change", () => {
+      const fileInput = tag("menu-upload-csv-input");
+      const file = fileInput.files && fileInput.files[0];
+      fileInput.value = "";
+      if (file) uploadCsvIntoCards(file);
+    });
+    tag("menu-adjust-cards").addEventListener("click", () => togglePopoutMenu("adjust-cards-menu", "menu-adjust-cards"));
     tag("menu-hide-names").addEventListener("click", () => showNames(false));
     tag("menu-show-names").addEventListener("click", () => showNames(true));
     tag("menu-hide-missing").addEventListener("click", hideMissing);
     tag("menu-hide-unflipped").addEventListener("click", hideUnflipped);
+    tag("menu-restore-hidden").addEventListener("click", restoreHiddenCards);
     tag("menu-group-address").addEventListener("click", groupByAddress);
     tag("menu-ungroup-address").addEventListener("click", ungroupByAddress);
     tag("menu-shuffle").addEventListener("click", shuffleCards);
-    tag("menu-paste-card").addEventListener("click", pasteCardFromClipboard);
+    tag("menu-flip-all").addEventListener("click", flipAllCards);
+    tag("menu-reset-cards").addEventListener("click", resetCards);
     tag("directory").addEventListener("click", handleCardClick);
     tag("directory").addEventListener("mousedown", handleCardMouseDown);
     tag("directory").addEventListener("dragstart", handleDragStart);
@@ -2129,19 +2470,101 @@
     tag("directory").addEventListener("drop", handleDrop);
     tag("directory").addEventListener("dragend", handleDragEnd);
     document.addEventListener("click", handleOutsideMenuClick);
-    document.addEventListener("click", handleOutsideMessagePickerClick);
     wireImageFallbacks();
   }
 
   function handleOutsideMenuClick(evt) {
     if (!menuIsOpen) return;
     if (tag("menu").contains(evt.target) || tag("burger").contains(evt.target)) return;
+    if (openPopoutId && tag(openPopoutId).contains(evt.target)) return;
     showMenu(false);
   }
 
-  // Hides (rather than destroys) the page's existing content in a wrapper
-  // div, then builds the grid alongside it, so closing the grid (the X,
-  // top right) can restore the original page instead of requiring a reload.
+  // Hides each of the page's existing top-level elements by setting their
+  // own style.display directly (rather than moving them into a wrapper div,
+  // or injecting a <style> rule):
+  // - Moving nodes fires disconnectedCallback/connectedCallback on any
+  //   custom elements inside them. Some pages (e.g.
+  //   directory.churchofjesuschrist.org) define custom elements in their
+  //   header (like the profile monogram) whose connectedCallback renders
+  //   additively rather than idempotently, so a wrapper-div move was
+  //   duplicating that markup.
+  // - A <style> element (even with !important) is a stylesheet, so a page
+  //   with a strict style-src CSP (common on sites using CSS-in-JS, which
+  //   this one does - note the styled-components-style "sc-xxxx" class
+  //   names) can silently block it from ever taking effect, leaving
+  //   everything - including a map widget - still showing. Setting
+  //   element.style.display via the CSSOM isn't gated by style-src, only
+  //   <style>/<link> tags and markup-parsed style="..." attributes are.
+  // - The hide is applied with !important, since a plain inline style can
+  //   still lose to an !important rule in the page's own stylesheet (seen
+  //   in practice: #__next's inline display:none was set, but its computed
+  //   display stayed "flex" because of one).
+  // - Each hidden element also gets its own MutationObserver watching its
+  //   style attribute, re-forcing display:none if something resets it -
+  //   this page's shared <platform-header> web component keeps re-applying
+  //   its own inline display, defeating a one-time hide.
+  // A separate MutationObserver on <body> hides anything the page adds
+  // there afterward too (e.g. a map that finishes loading after the grid
+  // is built), instead of only whatever was already there at that moment.
+  let wpdBodyObserver = null;
+  const wpdChildStyleObservers = new Map();
+
+  function forceHideDisplay(node) {
+    node.style.setProperty("display", "none", "important");
+  }
+
+  function watchAndHide(node) {
+    if (!(node instanceof Element)) return;
+    if (node.hasAttribute("data-wpd-keep")) return;
+
+    if (!node.hasAttribute("data-wpd-hidden-original")) {
+      node.dataset.wpdPrevDisplay = node.style.display;
+      node.setAttribute("data-wpd-hidden-original", "");
+    }
+    forceHideDisplay(node);
+
+    if (!wpdChildStyleObservers.has(node)) {
+      const observer = new MutationObserver(() => {
+        if (node.style.display !== "none") forceHideDisplay(node);
+      });
+      observer.observe(node, { attributes: true, attributeFilter: ["style"] });
+      wpdChildStyleObservers.set(node, observer);
+    }
+  }
+
+  function hideOriginalContent() {
+    for (const child of Array.from(document.body.children)) {
+      watchAndHide(child);
+    }
+
+    wpdBodyObserver = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        for (const node of mutation.addedNodes) {
+          watchAndHide(node);
+        }
+      }
+    });
+    wpdBodyObserver.observe(document.body, { childList: true });
+  }
+
+  function restoreOriginalContent() {
+    if (wpdBodyObserver) {
+      wpdBodyObserver.disconnect();
+      wpdBodyObserver = null;
+    }
+    for (const observer of wpdChildStyleObservers.values()) {
+      observer.disconnect();
+    }
+    wpdChildStyleObservers.clear();
+
+    for (const child of document.body.querySelectorAll("[data-wpd-hidden-original]")) {
+      child.style.display = child.dataset.wpdPrevDisplay || "";
+      delete child.dataset.wpdPrevDisplay;
+      child.removeAttribute("data-wpd-hidden-original");
+    }
+  }
+
   function buildGrid(title, members) {
     if (tag("wpd-grid-root")) {
       closeGrid();
@@ -2149,13 +2572,7 @@
 
     document.title = title;
 
-    const hiddenOriginal = document.createElement("div");
-    hiddenOriginal.id = "wpd-original-content";
-    hiddenOriginal.style.display = "none";
-    while (document.body.firstChild) {
-      hiddenOriginal.appendChild(document.body.firstChild);
-    }
-    document.body.appendChild(hiddenOriginal);
+    hideOriginalContent();
 
     const styleEl = document.createElement("style");
     styleEl.id = "wpd-grid-style";
@@ -2164,6 +2581,7 @@
 
     const gridRoot = document.createElement("div");
     gridRoot.id = "wpd-grid-root";
+    gridRoot.setAttribute("data-wpd-keep", "");
     gridRoot.innerHTML =
       getMenu() +
       `<div id="wpd-close-grid" title="Close photo grid">&#10005;</div>` +
@@ -2182,13 +2600,7 @@
     const styleEl = tag("wpd-grid-style");
     if (styleEl) styleEl.remove();
 
-    const hiddenOriginal = tag("wpd-original-content");
-    if (hiddenOriginal) {
-      while (hiddenOriginal.firstChild) {
-        document.body.insertBefore(hiddenOriginal.firstChild, hiddenOriginal);
-      }
-      hiddenOriginal.remove();
-    }
+    restoreOriginalContent();
   }
 
   window.__buildTableDirectory = function (members, title) {
